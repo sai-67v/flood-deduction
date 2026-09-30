@@ -492,3 +492,195 @@ var zScoreBasic = {
 };
 
 // ===== MAIN APPLICATION CODE =====
+var aoi = 0;
+var drawnAOI = false; //checks if the aoi displayed is drawn by the user or selected through the dropdowns
+var chartWidgets = [null, null]; // tracks the chart widget for left(0)/right(1) panel
+
+// Define a function to update aoi
+function updateAoi(level_0, level_1, ret) {
+  aoi = ee.FeatureCollection("FAO/GAUL/2015/level1")
+        .filter(ee.Filter.equals('ADM0_NAME', level_0))
+        .filter(ee.Filter.equals('ADM1_NAME', level_1))
+        .geometry();
+  if (ret === true) {
+    return(aoi);
+  }
+}
+
+aoi = ee.Geometry.BBox(-51.614718769210214, -30.026983088996428, -51.15466627897584, -29.818991150568596);
+
+if (ui.url.get('pfd0', null) !== null && ui.url.get('country', null) === null) {
+  var leftLon  = parseFloat(ui.url.get('llong')),
+      leftLat  = parseFloat(ui.url.get('llat')),
+      rightLon = parseFloat(ui.url.get('rlong')),
+      rightLat = parseFloat(ui.url.get('rlat'));
+  aoi = ee.Geometry.Rectangle([ leftLon, leftLat, rightLon, rightLat ]);
+}
+
+// Define a default start date
+var start_date = [ee.Date('2020-05-01'), ee.Date('2024-05-08')];
+
+var advance_days;
+if(ui.url.get('pfd0', null) !== null) {
+  var preFloodDays = parseInt(ui.url.get('sd0'));
+  var duringFloodDays = parseInt(ui.url.get('sd1'));
+  advance_days = [preFloodDays, duringFloodDays];
+}
+else{
+  advance_days = [60, 8];
+}
+// Create widgets for the advanced version of the app
+var init_zvv_thd = -3;
+var init_zvh_thd = -3;
+var init_pow_thd = 75;
+var init_elev_thd = 900;
+var init_slp_thd = 15;
+
+// Create text boxes for advanced tool
+var zvv_thd_text = ui.Textbox({value: init_zvv_thd,
+  onChange: function(value) {
+    init_zvv_thd = value;
+    updateFloodMap();
+  },
+  style: {maxWidth: '45px', padding: '0px'}
+});
+var zvh_thd_text = ui.Textbox({value: init_zvh_thd,
+  onChange: function(value) {
+    init_zvh_thd = value;
+    updateFloodMap();
+  },
+  style: {maxWidth: '45px', padding: '0px'}
+});
+var pow_thd_text = ui.Textbox({value: init_pow_thd,
+  onChange: function(value) {
+    init_pow_thd = value;
+    updateFloodMap();
+  },
+  style: {maxWidth: '45px', padding: '0px'}
+});
+var elev_thd_text = ui.Textbox({value: init_elev_thd,
+  onChange: function(value) {
+    init_elev_thd = value;
+    updateFloodMap();
+  },
+  style: {maxWidth: '50px', padding: '0px'}
+});
+var slp_thd_text = ui.Textbox({value: init_slp_thd,
+  onChange: function(value) {
+    init_slp_thd = value;
+    updateFloodMap();
+  },
+  style: {maxWidth: '35px', padding: '0px'}
+});
+
+var pass_options = ['Combined', 'Separate', 'Ascending', 'Descending'];
+var pass_dd = ui.Select({items: pass_options,
+  value: 'Combined',
+  onChange: function() {
+    updateFloodMap();
+  }
+});
+
+// Modify the function from DeVries to fit the needs
+function getFloodImage(s1_collection_t1, s1_collection_t2) {
+  // Z-score thresholds using user-defined values
+  
+  // Compute Z-scores per instrument mode and orbital direction
+  if (pass_dd.getValue() == pass_options[0]) {
+    var z = zScoreBasic.calc_zscore(s1_collection_t1, s1_collection_t2);
+  
+  } else if (pass_dd.getValue() == pass_options[1]) {
+    var z_iwasc = zScore.calc_zscore(s1_collection_t1, s1_collection_t2, 'IW', 'ASCENDING');
+    var z_iwdsc = zScore.calc_zscore(s1_collection_t1, s1_collection_t2, 'IW', 'DESCENDING');
+    // DeVries take mosaic because they deal with entire collection and need the last image
+    // only. Since the pipeline explicitly passes time 2 collection, mean should be fine.
+    var z = ee.ImageCollection.fromImages([z_iwasc, z_iwdsc]).mean();
+  
+  } else if (pass_dd.getValue() == pass_options[2]) {
+    var z = zScore.calc_zscore(s1_collection_t1, s1_collection_t2, 'IW', 'ASCENDING');
+    
+  } else if (pass_dd.getValue() == pass_options[3]) {
+    var z = zScore.calc_zscore(s1_collection_t1, s1_collection_t2, 'IW', 'DESCENDING');
+  }
+  
+  var floods = mapFloods.mapFloods(z, parseInt(init_zvv_thd), parseInt(init_zvh_thd), 
+    parseInt(init_pow_thd), parseInt(init_elev_thd), parseInt(init_slp_thd));
+  
+  return(floods.clip(aoi));
+}
+
+// Create a function for getting updated Sentinel-1 collection
+function getSentinel1WithinDateRange(date, span) {
+  var filters = [
+    ee.Filter.listContains("transmitterReceiverPolarisation", "VV"),
+    ee.Filter.listContains("transmitterReceiverPolarisation", "VH"),
+    ee.Filter.or(
+      ee.Filter.equals("instrumentMode", "IW")
+      ),
+    ee.Filter.bounds(aoi),
+    ee.Filter.eq('resolution_meters', 10),
+    ee.Filter.date(date, date.advance(span+1, 'day'))
+  ];
+  
+  var s1_collection = ee.ImageCollection('COPERNICUS/S1_GRD')
+    .filter(filters);
+
+  return s1_collection;
+}
+
+function createS1Composite(s1_collection) {
+  var composite = ee.Image.cat([
+    s1_collection.select('VH').mean(),
+    s1_collection.select('VV').mean(),
+    s1_collection.select('VH').mean()
+    ]);
+    
+  return composite.clip(aoi);
+}
+
+// Create a function for getting updated Sentinel-2 collection
+function maskS2clouds(image) {
+  var qa = image.select('QA60');
+
+  // Bits 10 and 11 are clouds and cirrus, respectively.
+  var cloudBitMask = 1 << 10;
+  var cirrusBitMask = 1 << 11;
+
+  // Both flags should be set to zero, indicating clear conditions.
+  var mask = qa.bitwiseAnd(cloudBitMask).eq(0)
+      .and(qa.bitwiseAnd(cirrusBitMask).eq(0));
+
+  return image.updateMask(mask);
+}
+
+function getSentinel2WithinDateRange(date, span) {
+  var sentinel2 = ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED')
+                    .filterBounds(aoi)
+                    .filterDate(date, date.advance(span+1, 'day'))
+                    .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 70))
+                    .map(maskS2clouds)
+                    .select('B4', 'B3', 'B2');
+                    
+  return sentinel2.mean().clip(aoi);
+}
+
+// Create a function to generate Image dynamically
+function getS1Image(index) {
+  var s1_collection = getSentinel1WithinDateRange(start_date[index], advance_days[index]);
+  return createS1Composite(s1_collection);
+}
+
+function getS2Image(index) {
+  return getSentinel2WithinDateRange(start_date[index], advance_days[index]);
+}
+
+var s1RawVizParams = {min: [-25, -20, -25], max: [0, 10, 0]};
+var s2RawVizParams = {bands: ['B4', 'B3', 'B2'], max: 3048, gamma: 1};
+var show_left_sar = true;
+var show_right_sar = true;
+var show_left_optical = false;
+var show_right_optical = false;
+var selectedState;
+var selectedCountry;
+
+// Adds a layer selection widget to the given map, to allow users to change
