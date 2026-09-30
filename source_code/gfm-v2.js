@@ -684,3 +684,628 @@ var selectedState;
 var selectedCountry;
 
 // Adds a layer selection widget to the given map, to allow users to change
+// which image is displayed in the associated map.
+function addLayerSelector(mapToChange, defaultValue, position) {
+  var statesDD, countryDD;
+  var panelHeading = (defaultValue == '0') ? 
+      ui.Label("Pre-flood panel", {fontSize:'18px', fontWeight:'bold'}) : 
+      ui.Label("During-flood panel", {fontSize:'18px', fontWeight:'bold'});
+  var label = (defaultValue == '0') ? ui.Label("Pre-flood date range:") : ui.Label("During-flood date range:");
+  var show_optical = (defaultValue == '0') ? show_left_optical : show_right_optical;
+  var show_sar = (defaultValue == '0') ? show_left_sar : show_right_sar;
+  
+  var controlPanel = ui.Panel({style: {position: position, width:'18%'}});
+  // Add panel heading
+  controlPanel.add(panelHeading);
+  // Add text to point towards the chart
+  controlPanel.add(
+    ui.Label('Data availability chart:',
+      {stretch: 'vertical', textAlign: 'left'})
+      );
+  
+  // This function changes the given map to show the selected image.
+  function updateMap() {
+    mapToChange.layers().set(0, ui.Map.Layer(getS1Image(defaultValue), s1RawVizParams, 'Sentinel-1', show_sar));
+    mapToChange.layers().set(1, ui.Map.Layer(getS2Image(defaultValue), s2RawVizParams, 'Sentinel-2', show_optical));
+    
+    if (defaultValue == 1) {
+      mapToChange.layers().set(2, ui.Map.Layer(
+        getFloodImage(getSentinel1WithinDateRange(start_date[0], advance_days[0]), 
+                      getSentinel1WithinDateRange(start_date[1], advance_days[1])), 
+        {palette: mapFloods.palette}, 'Flood Map', true));
+    }
+  }
+
+  // Add dropdown for states first so that
+  // it can be updated from within country dropdown
+  var leftSubPanel1 = ui.Panel({
+    layout: ui.Panel.Layout.flow('horizontal'),
+    style:{width: '100%'}
+  });
+  
+  countryDD = ui.Select({items:[], placeholder:'Loading..', 
+    style:{fontSize:'14px', color:'blue', width:'40%', padding:'0px'}});
+  statesDD = ui.Select({items:[], placeholder:'State', 
+    style:{fontSize:'14px', color:'blue', width:'40%', padding:'0px'}});
+  
+  var countryNames = ee.List(Object.keys(aoiFilter.countries).sort());
+  countryNames.evaluate(function(states){
+    countryDD.items().reset(states);
+    if(ui.url.get('country', null) !== null && ui.url.get('state', null) !== null) {
+      countryDD.setPlaceholder(ui.url.get('country'));
+    }
+    else {
+      countryDD.setPlaceholder('Country');
+    }
+    countryDD.onChange(function(state){
+      selectedCountry = state;
+      // once you select a state (onChange) get all counties and fill the dropdown
+      statesDD.setPlaceholder('Loading...');
+      var counties = ee.List(aoiFilter.countries[state]);
+      //print(counties)
+      counties.evaluate(function(countiesNames){
+        statesDD.items().reset(countiesNames);
+        statesDD.setPlaceholder('State');
+      });
+    });
+  });
+  statesDD.onChange(function(value){
+    selectedState = value;
+    drawnAOI = false;
+    updateAoi(countryDD.getValue(), value, false);
+    // Using updateMap() function here will only update one map
+    updateBothMapPanel();
+  });
+
+
+  if(ui.url.get('country', null) !== null && ui.url.get('state', null) !== null) {
+    var country = ui.url.get('country');
+    var state = ui.url.get('state');
+    countryDD.setPlaceholder(country);
+    statesDD.setPlaceholder(state);
+    updateAoi(country, state, false);
+  }
+  leftSubPanel1.add(countryDD);
+  leftSubPanel1.add(statesDD);
+
+
+  // Add the date slider for both the maps
+  var dateSlider = ui.DateSlider({
+    // MM-DD-YYYY
+    start: ee.Date('2015-01-01'),
+    period: 1,
+    onChange:function renderedDate(dateRange) {
+      start_date[defaultValue] = dateRange.start();
+      updateMap();
+      updateFloodMap();
+      updateChart(mapToChange, defaultValue, controlPanel);
+    }});
+    
+  if(ui.url.get('pfd0', null) !== null) {
+    var preFloodDate = ui.url.get('pfd0');
+    var duringFloodDate = ui.url.get('dfd0');
+    start_date = [ee.Date(preFloodDate), ee.Date(duringFloodDate)];
+    dateSlider = dateSlider.setValue(start_date[defaultValue].format('Y-MM-dd').getInfo());
+  }
+  else{
+    // Set the default date of the date slider from the actual map dates
+    dateSlider = dateSlider.setValue(start_date[defaultValue].format('Y-MM-dd').getInfo());
+  }
+  
+  // Add the text box for users to enter the desired span
+  var text_box = ui.Textbox({
+    placeholder: "Succeeding days - e.g. "+String(advance_days[defaultValue]),
+    onChange: function updateDate(text) {
+      advance_days[defaultValue] = Number(text);
+      updateMap();
+      updateFloodMap();
+      updateChart(mapToChange, defaultValue, controlPanel);
+    }});
+  
+  if(ui.url.get('pfd0', null) !== null) {
+    text_box.setValue(advance_days[defaultValue]);
+  }
+  
+  
+  // Set a common title
+  var title = ui.Label('Flood Deduction System',
+  {
+    stretch: 'horizontal',
+    textAlign: 'center',
+    fontWeight: 'bold',
+    fontSize: '16px'
+  });
+  
+  // use the legend module to create the legend for flood layer
+  var legend = floodLegend.legend();
+    
+  // Create main control panel
+  // Add area selector in the left panel only
+  if(defaultValue == 0) {
+    var dd_heading = ui.Label("Select area of interest:");
+    controlPanel.add(dd_heading);
+    controlPanel.add(leftSubPanel1);
+    controlPanel.add(
+      ui.Button({
+        label: 'Draw AOI',
+        style: {stretch: 'horizontal'},
+        onClick: function() {
+          drawnAOI = true;
+          leftMap.drawingTools().clear();
+          leftMap.drawingTools().setShown(false);
+          leftMap.drawingTools().setShape('rectangle');
+          leftMap.drawingTools().draw();
+          
+          leftMap.drawingTools().onDraw(function(geometry) {
+            leftMap.drawingTools().stop();
+            leftMap.drawingTools().clear();
+            rightMap.drawingTools().stop();
+            rightMap.drawingTools().clear();
+            aoi = geometry;
+            updateBothMapPanel();
+          });
+          
+          rightMap.drawingTools().clear();
+          rightMap.drawingTools().setShown(false);
+          rightMap.drawingTools().setShape('rectangle');
+          rightMap.drawingTools().draw();
+          
+          rightMap.drawingTools().onDraw(function(geometry) {
+            rightMap.drawingTools().stop();
+            rightMap.drawingTools().clear();
+            leftMap.drawingTools().stop();
+            leftMap.drawingTools().clear();
+            aoi = geometry;
+            updateBothMapPanel();
+          });
+        }
+      })    
+    );    
+  }
+  
+  // Add common widgets
+  controlPanel.add(label);
+  controlPanel.add(dateSlider);
+  controlPanel.add(text_box);
+  
+  // Add download button to the right panel
+  if(defaultValue == 1) {
+    controlPanel.add(
+      ui.Label('Go to Flood Impact Portal',
+      {stretch: 'horizontal', textAlign: 'left',
+      fontSize:'16px', fontWeight:'bold'}));
+
+    var portal_button = ui.Button({
+      label: 'Launch Flood Impact Portal',
+      onClick: function(){
+        displayFloodImpactPortal(aoi);  
+      }
+    });
+    
+    var shareable_url_label = ui.Label('Open Custom URL', {shown: false});
+
+    var link_button = ui.Button({
+      label: 'Get Shareable URL',
+      onClick: function() {
+        updateLink(selectedState, selectedCountry);
+        var url;
+        if (drawnAOI === false && selectedState && selectedCountry) {
+          url = 'https://ptripathy.users.earthengine.app/view/global-flood-mapper-v2#' +
+            'pfd0='    + ui.url.get('pfd0')    + ';' +
+            'pfd1='    + ui.url.get('pfd1')    + ';' +
+            'dfd0='    + ui.url.get('dfd0')    + ';' +
+            'dfd1='    + ui.url.get('dfd1')    + ';' +
+            'sd0='     + ui.url.get('sd0')     + ';' +
+            'sd1='     + ui.url.get('sd1')     + ';' +
+            'state='   + ui.url.get('state')   + ';' +
+            'country=' + ui.url.get('country') + ';' +
+            'zvv='     + ui.url.get('zvv')     + ';' +
+            'zvh='     + ui.url.get('zvh')     + ';' +
+            'pow='     + ui.url.get('pow')     + ';' +
+            'pass='    + ui.url.get('pass')    + ';' +
+            'elev='    + ui.url.get('elev')    + ';' +
+            'slp='     + ui.url.get('slp');
+        } else {
+          url = 'https://ptripathy.users.earthengine.app/view/global-flood-mapper-v2#' +
+            'pfd0='  + ui.url.get('pfd0')  + ';' +
+            'pfd1='  + ui.url.get('pfd1')  + ';' +
+            'dfd0='  + ui.url.get('dfd0')  + ';' +
+            'dfd1='  + ui.url.get('dfd1')  + ';' +
+            'sd0='   + ui.url.get('sd0')   + ';' +
+            'sd1='   + ui.url.get('sd1')   + ';' +
+            'llat='  + ui.url.get('llat')  + ';' +
+            'llong=' + ui.url.get('llong') + ';' +
+            'rlat='  + ui.url.get('rlat')  + ';' +
+            'rlong=' + ui.url.get('rlong') + ';' +
+            'zvv='   + ui.url.get('zvv')   + ';' +
+            'zvh='   + ui.url.get('zvh')   + ';' +
+            'pow='   + ui.url.get('pow')   + ';' +
+            'pass='  + ui.url.get('pass')  + ';' +
+            'elev='  + ui.url.get('elev')  + ';' +
+            'slp='   + ui.url.get('slp');
+        }
+        shareable_url_label.setUrl(url);
+        shareable_url_label.style().set({shown: true});
+      }
+    });
+    
+    controlPanel.add(portal_button);
+    controlPanel.add(link_button);
+    controlPanel.add(shareable_url_label);
+
+      
+    controlPanel.add(
+      ui.Label('Download Flood Map',
+      {stretch: 'horizontal', textAlign: 'left',
+      fontSize:'16px', fontWeight:'bold'}));
+    
+    // Create sub-panel to accomodate buttons
+    var rightSubPanel1 = ui.Panel({
+      layout: ui.Panel.Layout.flow('horizontal', true),
+      style:{width: '100%'}});
+    var rightSubPanel2 = ui.Panel({
+      layout: ui.Panel.Layout.flow('horizontal', true),
+      style:{width: '100%'}});
+    var exportControls = ui.Panel({
+      layout: ui.Panel.Layout.flow('horizontal', true),
+      style:{width: '100%'}});
+    
+    // Add button and link to download flood shapefile
+    
+    var shp_download_button = ui.Button({
+      label: 'SHP',
+      onClick: function() {
+        exportControls.clear();
+        // Smoothing Radius Slider (affects both smoothing values)
+        var shpSmoothingSliderLabel = ui.Label('Smoothing Radius (px)');
+        var shpSmoothingSlider = ui.Slider({
+          min: 0,
+          max: 10,
+          value: 3,
+          step: 1,
+          style: {width: '100%'},
+        });
+  
+        // Cell Size Slider (affects the cell size)
+        var shpCellSizeLabel = ui.Label('Cell Size (m)');
+        var shpCellSizeSlider = ui.Slider({
+          min: 10,
+          max: 1000,
+          value: 100,
+          step: 10,
+          style: {width: '100%'},
+        });
+  
+        // Confirm Button
+        var shpConfirmButton = ui.Button({
+          label: 'Confirm',
+          onClick: function() {
+            var smoothingValue = shpSmoothingSlider.getValue();
+            var cellSizeValue = shpCellSizeSlider.getValue();
+  
+            var flood_image = rightMap.layers().get(2).getEeObject();
+            var urls = floodMapExport.getFloodShpUrl(
+              flood_image,
+              smoothingValue,
+              aoi,
+              cellSizeValue,
+              'Flood_' +
+                start_date[0].format('YYYYMMdd').getInfo() + '_' +
+                start_date[1].format('YYYYMMdd').getInfo() + '_' +
+                aoi.bounds().coordinates().get(0).getInfo()[0][1].toFixed(2) + '_' +
+                aoi.bounds().coordinates().get(0).getInfo()[0][0].toFixed(2) + '_' +
+                aoi.bounds().coordinates().get(0).getInfo()[2][1].toFixed(2) + '_' +
+                aoi.bounds().coordinates().get(0).getInfo()[2][0].toFixed(2) + '_' +
+                cellSizeValue+'m_SR'+smoothingValue
+            );
+            
+            urls.evaluate(function(urlList){
+              var nonWaterUrl = urlList[0];
+              var lowUrl = urlList[1];
+              var highUrl = urlList[2];
+              var permanentWaterUrl = urlList[3];
+              
+              var shp_label_0 = ui.Label('SHP link (Non-Water)', {shown: true});
+              shp_label_0.setUrl(nonWaterUrl);
+
+              var shp_label_1 = ui.Label('SHP link (Low Confidence)', {shown: true});
+              shp_label_1.setUrl(lowUrl);
+            
+              var shp_label_2 = ui.Label('SHP link (High Confidence)', {shown: true});
+              shp_label_2.setUrl(highUrl);
+
+              var shp_label_3 = ui.Label('SHP link (Permanent Water)', {shown: true});
+              shp_label_3.setUrl(permanentWaterUrl);
+
+              rightSubPanel2.add(shp_label_0);
+              rightSubPanel2.add(shp_label_1);
+              rightSubPanel2.add(shp_label_2);
+              rightSubPanel2.add(shp_label_3);
+
+            });
+
+            shpSmoothingSliderLabel.style().set({shown: false});
+            shpSmoothingSlider.style().set({shown: false});
+            shpCellSizeLabel.style().set({shown: false});
+            shpCellSizeSlider.style().set({shown: false});
+            shpConfirmButton.style().set({shown: false});
+          }
+        });
+  
+        // Add the sliders and confirm button to the existing right-hand panel
+        exportControls.add(shpSmoothingSliderLabel);
+        exportControls.add(shpSmoothingSlider);
+        exportControls.add(shpCellSizeLabel);
+        exportControls.add(shpCellSizeSlider);
+        exportControls.add(shpConfirmButton);
+        rightSubPanel1.remove(exportControls);
+        rightSubPanel1.add(exportControls);
+        
+        
+      }
+    });
+    
+    // Add button and link to download flood PNG map
+    var png_label = ui.Label('PNG link', {shown: false});
+    var png_download_button = ui.Button({
+      label: 'PNG',
+      onClick: function() {
+        var flood_image = rightMap.layers().get(2).getEeObject();
+        // Use consistent visualization and resolution
+        var visParams = {min:0, max:4, palette:mapFloods.palette, forceRgbOutput:true};
+        var pngToExport = flood_image.visualize(visParams);
+        var png_url = pngToExport.getThumbURL({
+          dimensions: 1000,
+          region: aoi,
+          format: 'png',
+        });
+        
+        png_label.setUrl(png_url);
+        png_label.style().set({shown: true});
+      }});
+    
+    // Add button and link to download flood TIFF map
+    var tiff_instructions_label = ui.Label('To download, open your terminal and navigate to the desired download directory. Then, copy and paste the command below:', {shown: false});
+    var tiff_download_label = ui.Label('GeoTIFF Link', {shown: false});
+
+    var tiff_download_button = ui.Button({
+      label: 'GeoTIFF',
+      onClick: function() {
+        exportControls.clear();
+        // Smoothing Radius Slider (affects both smoothing values)
+        var smoothingSliderLabel = ui.Label('Smoothing Radius (px)');
+        var smoothingSlider = ui.Slider({
+          min: 0,
+          max: 10,
+          value: 3,
+          step: 1,
+          style: {width: '100%'},
+        });
+  
+        // Cell Size Slider (affects the cell size)
+        var cellSizeLabel = ui.Label('Cell Size (m)');
+        var cellSizeSlider = ui.Slider({
+          min: 10,
+          max: 1000,
+          value: 400,
+          step: 10,
+          style: {width: '100%'},
+        });
+  
+        // Confirm Button
+        var confirmButton = ui.Button({
+          label: 'Confirm',
+          onClick: function() {
+            var smoothingValue = smoothingSlider.getValue();
+            var cellSizeValue = cellSizeSlider.getValue();
+  
+            var flood_image = rightMap.layers().get(2).getEeObject();
+            var tiff_url = floodMapExport.getFloodTiffUrl(
+              flood_image,
+              smoothingValue,
+              aoi,
+              cellSizeValue,
+              'Flood_' +
+                start_date[0].format('YYYYMMdd').getInfo() + '_' +
+                start_date[1].format('YYYYMMdd').getInfo() + '_' +
+                aoi.bounds().coordinates().get(0).getInfo()[0][1].toFixed(2) + '_' +
+                aoi.bounds().coordinates().get(0).getInfo()[0][0].toFixed(2) + '_' +
+                aoi.bounds().coordinates().get(0).getInfo()[2][1].toFixed(2) + '_' +
+                aoi.bounds().coordinates().get(0).getInfo()[2][0].toFixed(2) + '_' +
+                cellSizeValue+'m_SR'+smoothingValue
+            );
+  
+            var tiff_label = ui.Label('GeoTIFF link', {shown: true});
+            tiff_label.setUrl(tiff_url);
+          
+            rightSubPanel2.add(tiff_label);
+
+
+            smoothingSliderLabel.style().set({shown: false});
+            smoothingSlider.style().set({shown: false});
+            cellSizeLabel.style().set({shown: false});
+            cellSizeSlider.style().set({shown: false});
+            confirmButton.style().set({shown: false});
+          
+          }
+        });
+        
+  
+        // Add the sliders and confirm button to the existing right-hand panel
+        exportControls.add(smoothingSliderLabel);
+        exportControls.add(smoothingSlider);
+        exportControls.add(cellSizeLabel);
+        exportControls.add(cellSizeSlider);
+        exportControls.add(confirmButton);
+        rightSubPanel1.remove(exportControls);
+        rightSubPanel1.add(exportControls);
+      
+      }
+    });
+      
+    controlPanel.add(
+      ui.Label('Generate the download link using the buttons below:',
+      {stretch: 'horizontal', textAlign: 'left',
+      fontSize:'12px'}));
+      
+    // Add download buttons and links to right panel
+    rightSubPanel1.add(shp_download_button);
+    rightSubPanel1.add(png_download_button);
+    rightSubPanel1.add(tiff_download_button);
+    
+    rightSubPanel2.add(png_label);
+    rightSubPanel2.add(tiff_instructions_label);
+    rightSubPanel2.add(tiff_download_label);
+    controlPanel.add(rightSubPanel1);
+    controlPanel.add(rightSubPanel2);
+  } else { // This section is to add widgets in the left panel only
+    // Add advanced options
+    controlPanel.add(ui.Label('Advanced options',
+      {stretch: 'horizontal', textAlign: 'left',
+      fontSize:'16px', fontWeight: 'bold'}));
+      
+    controlPanel.add(ui.Panel([ui.Label('VV & VV threshold:', {fontSize:'12px', position:'middle-left'}), 
+        zvv_thd_text, zvh_thd_text], ui.Panel.Layout.flow('horizontal', false), {padding: '0px'}));
+        
+    controlPanel.add(ui.Panel([ui.Label('Open water threshold:', {fontSize:'12px', position:'middle-left'}), 
+        pow_thd_text], ui.Panel.Layout.flow('horizontal', false)));
+        
+    controlPanel.add(ui.Panel([ui.Label('Asc/Desc:', {fontSize:'12px', position:'middle-left'}), 
+        pass_dd], ui.Panel.Layout.flow('horizontal', false)));
+    
+    controlPanel.add(ui.Panel([ui.Label('Max elevation:', {fontSize:'12px', position:'middle-left'}), 
+        elev_thd_text], ui.Panel.Layout.flow('horizontal', false)));
+        
+    controlPanel.add(ui.Panel([ui.Label('Max slope:', {fontSize:'12px', position:'middle-left'}), 
+        slp_thd_text], ui.Panel.Layout.flow('horizontal', false)));
+  }
+  
+  // dummy panel to add on the either side
+  var dummyPanel = ui.Panel({
+    widgets: [], 
+    style: {width:'18%'}});
+  
+  mapToChange.add(legend);
+  mapToChange.add(title);
+  return [controlPanel, dummyPanel];
+}
+
+// Create left and right maps
+var leftMap = ui.Map();
+leftMap.setControlVisibility(true);
+
+var rightMap = ui.Map();
+rightMap.setControlVisibility(true);
+
+var left_panel = addLayerSelector(leftMap, 0, 'middle-left');
+var left_dummy = left_panel[1];
+left_panel = left_panel[0];
+
+var right_panel = addLayerSelector(rightMap, 1, 'middle-right');
+var right_dummy = right_panel[1];
+right_panel = right_panel[0];
+
+var main_panel = [left_panel, right_panel];
+
+updateBothMapPanel();
+
+
+// Create a function that takes the checkbox boolean
+// value of the two layers of both the maps and updates
+// the variable. This function will be called before the 
+// updateMap funtion.
+function updateVisibility() {
+  // Use the checkbox information to update the layers
+  // in both the maps. 0 is SAR, 1 is optical.  
+  show_left_sar = leftMap.layers().get(0).getShown();
+  show_right_sar = rightMap.layers().get(0).getShown();
+  
+  show_left_optical = leftMap.layers().get(1).getShown();
+  show_right_optical = rightMap.layers().get(1).getShown();
+}
+
+// This function is called only when 
+// a new state is selected
+function updateBothMapPanel() {
+  updateVisibility();
+  updateChart(leftMap, 0, left_panel);
+  updateChart(rightMap, 1, right_panel);
+  
+  // Add Sentinel-1 images to both the maps
+  leftMap.layers().set(0, ui.Map.Layer(getS1Image(0),s1RawVizParams, 'Sentinel-1', show_left_sar));
+  rightMap.layers().set(0, ui.Map.Layer(getS1Image(1),s1RawVizParams, 'Sentinel-1', show_right_sar));
+  
+  // Add Sentinel-2 images to both the maps  
+  leftMap.layers().set(1, ui.Map.Layer(getS2Image(0),s2RawVizParams, 'Sentinel-2', show_left_optical));
+  rightMap.layers().set(1, ui.Map.Layer(getS2Image(1),s2RawVizParams, 'Sentinel-2', show_right_optical));
+  
+  // Update the flood map
+  updateFloodMap();
+
+  leftMap.centerObject(aoi);
+}
+
+// Update flood map
+function updateFloodMap() {
+  rightMap.layers().set(2, ui.Map.Layer(
+        getFloodImage(getSentinel1WithinDateRange(start_date[0], advance_days[0]), 
+                      getSentinel1WithinDateRange(start_date[1], advance_days[1])), 
+        {palette: mapFloods.palette}, 'Flood Map', true));
+}
+
+// Update url with necessary information
+function updateLink(stateName, countryName) {
+  if (drawnAOI == false && stateName != null && stateName.length > 0 && countryName.length > 0) {
+    ui.url.set({
+    'pfd0': start_date[0].format('YYYY-MM-dd').getInfo(), //pre-flood date
+    'pfd1': start_date[0].advance(advance_days[0], 'day').format('YYYY-MM-dd').getInfo(),
+    'dfd0': start_date[1].format('YYYY-MM-dd').getInfo(), //during-flood date
+    'dfd1': start_date[1].advance(advance_days[1], 'day').format('YYYY-MM-dd').getInfo(),
+    'sd0': advance_days[0], //before flood succeeding days
+    'sd1': advance_days[1], // during flood succeeding days      
+    'state': stateName,
+    'country': countryName,
+    'zvv': zvv_thd_text.getValue(),
+    'zvh': zvh_thd_text.getValue(),
+    'pow': pow_thd_text.getValue(),
+    'pass': pass_dd.getValue(),
+    'elev': elev_thd_text.getValue(),
+    'slp': slp_thd_text.getValue()
+    });
+  }
+  else {
+    ui.url.set({
+      'pfd0': start_date[0].format('YYYY-MM-dd').getInfo(), //pre-flood date
+      'pfd1': (start_date[0].advance(advance_days[0], 'day')).format('YYYY-MM-dd').getInfo(),
+      'dfd0': start_date[1].format('YYYY-MM-dd').getInfo(), //during-flood date
+      'dfd1': start_date[1].advance(advance_days[1], 'day').format('YYYY-MM-dd').getInfo(),
+      'sd0': advance_days[0], //before flood succeeding days
+      'sd1': advance_days[1], // during flood succeeding days     
+      'llat': aoi.bounds().coordinates().get(0).getInfo()[0][1].toFixed(2), //aoi left latitude
+      'llong': aoi.bounds().coordinates().get(0).getInfo()[0][0].toFixed(2), //aoi left longitude
+      'rlat': aoi.bounds().coordinates().get(0).getInfo()[2][1].toFixed(2), //aoi right latitude
+      'rlong': aoi.bounds().coordinates().get(0).getInfo()[2][0].toFixed(2), //aoi right longitude
+      'zvv': zvv_thd_text.getValue(),
+      'zvh': zvh_thd_text.getValue(),
+      'pow': pow_thd_text.getValue(),
+      'pass': pass_dd.getValue(),
+      'elev': elev_thd_text.getValue(),
+      'slp': slp_thd_text.getValue()
+    });
+  }
+}
+
+// Update availability graph
+function updateChart(map, defaultValue, controlPanel) {
+  var chart = availabilityGraphStacked.generateCollectionChart(
+    getSentinel1WithinDateRange(start_date[defaultValue], advance_days[defaultValue])
+    );
+
+  if (chartWidgets[defaultValue]) {
+    controlPanel.remove(chartWidgets[defaultValue]);
+  }
+  controlPanel.insert(2, chart);
+  chartWidgets[defaultValue] = chart;
+}
+
+// display the flood impact portal and clear existing UI elements
