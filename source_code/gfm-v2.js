@@ -2149,3 +2149,278 @@ function displayFloodImpactPortal(aoi) {
     .setOptions({
       //title: 'Affected Population by Confidence Level',
       //titleTextStyle: {fontSize: 14},
+      hAxis: {title: 'Population Dataset'},
+      vAxis: {title: 'No. of People Affected', format: 'short'},
+      isStacked: 'absolute',
+      legend: {position: 'top'},
+      colors: ['#D20103', 'F8E806']  // High = red, Low = yellow
+    });
+
+    pop_chartHolder.add(newChart);
+  }
+
+  chartLegendRow.add(pop_chartBox);
+  //chartLegendRow.add(dropdownPanel);
+  
+  // Add the combined panel to chartPanel
+  chartPanel.add(chartLegendRow);
+  chartPanel.add(ui.Label({
+      value: 'Note: You can download all the data displayed here by running the script of this app in GEE code editor. Please find the full source script on the GitHub repository: https://github.com/sai-67v/flood-deduction',
+      style: {fontSize: '12px', margin: '2 2 2 2', padding:'2px'}
+  }));
+  // The chart is built once, after the panels are attached to ui.root
+
+  // export flood depth map
+  Export.image.toDrive({
+    image: floodDepth.visualize(floodVis),   
+    description: 'Flood_Depth_Map',
+    folder:      'Flood_Map_Exports',
+    fileNamePrefix: 'Flood_Depth_Map',
+    region:      aoi,
+    scale:       10,
+    crs:         "EPSG:4326",
+    fileFormat:  'GeoTIFF'      
+  });
+    
+  // export land cover map
+  Export.image.toDrive({
+    image: landcover.visualize(worldCoverVis),   
+    description: 'Land_Cover_Map',
+    folder:      'Flood_Map_Exports',
+    fileNamePrefix: 'Land_Cover_Map',
+    region:      aoi,
+    scale:       10,
+    crs:         "EPSG:4326",
+    fileFormat:  'GeoTIFF'      
+  });
+    
+  // export population map
+  Export.image.toDrive({
+    image: populationDatasets[populationSelect.getValue()]
+      .visualize(populationVisFor(populationSelect.getValue())),
+    description: 'Gridded_Population_Map',
+    folder:      'Flood_Map_Exports',
+    fileNamePrefix: 'Gridded_Population_Map',
+    region:      aoi,
+    scale:       10,
+    crs:         "EPSG:4326",
+    fileFormat:  'GeoTIFF'      
+  });
+  
+  var returnUrl;
+  if (drawnAOI === false && selectedState && selectedCountry) {
+    returnUrl = 'https://ptripathy.users.earthengine.app/view/global-flood-mapper-v2#' +
+      'pfd0='    + ui.url.get('pfd0')    + ';' +
+      'pfd1='    + ui.url.get('pfd1')    + ';' +
+      'dfd0='    + ui.url.get('dfd0')    + ';' +
+      'dfd1='    + ui.url.get('dfd1')    + ';' +
+      'sd0='     + ui.url.get('sd0')     + ';' +
+      'sd1='     + ui.url.get('sd1')     + ';' +
+      'state='   + ui.url.get('state')   + ';' +
+      'country=' + ui.url.get('country') + ';' +
+      'zvv='     + ui.url.get('zvv')     + ';' +
+      'zvh='     + ui.url.get('zvh')     + ';' +
+      'pow='     + ui.url.get('pow')     + ';' +
+      'pass='    + ui.url.get('pass')    + ';' +
+      'elev='    + ui.url.get('elev')    + ';' +
+      'slp='     + ui.url.get('slp');
+  } else {
+    returnUrl = 'https://ptripathy.users.earthengine.app/view/global-flood-mapper-v2#' +
+      'pfd0='  + ui.url.get('pfd0')  + ';' +
+      'pfd1='  + ui.url.get('pfd1')  + ';' +
+      'dfd0='  + ui.url.get('dfd0')  + ';' +
+      'dfd1='  + ui.url.get('dfd1')  + ';' +
+      'sd0='   + ui.url.get('sd0')   + ';' +
+      'sd1='   + ui.url.get('sd1')   + ';' +
+      'llat='  + ui.url.get('llat')  + ';' +
+      'llong=' + ui.url.get('llong') + ';' +
+      'rlat='  + ui.url.get('rlat')  + ';' +
+      'rlong=' + ui.url.get('rlong') + ';' +
+      'zvv='   + ui.url.get('zvv')   + ';' +
+      'zvh='   + ui.url.get('zvh')   + ';' +
+      'pow='   + ui.url.get('pow')   + ';' +
+      'pass='  + ui.url.get('pass')  + ';' +
+      'elev='  + ui.url.get('elev')  + ';' +
+      'slp='   + ui.url.get('slp');
+  }
+  
+  chartPanel.add(ui.Label({
+    value: 'Return to flood mapper',
+    targetUrl: returnUrl
+  }));
+  
+  
+  
+  // Add legends
+  // Flood legend
+  var floodLegend = ui.Panel({
+    style: {
+      position: 'bottom-left',
+      padding: '8px 10px',
+      backgroundColor: 'rgba(255, 255, 255, 0.8)'
+    }
+  });
+  
+  // Utility to make each row of the legend
+  var makeRow = function(color, name) {
+    var colorBox = ui.Label({
+      style: {
+        backgroundColor: color,
+        padding: '8px',
+        margin: '2px 5px 0 0'
+      }
+    });
+    var description = ui.Label(name, {
+      fontSize: '12px',
+      margin: '2px 0'
+    });
+    return ui.Panel({
+      widgets: [colorBox, description],
+      layout: ui.Panel.Layout.Flow('horizontal')
+    });
+  };
+
+  
+  lcLegend.add(makeRow('#006400', 'Tree cover'));
+  lcLegend.add(makeRow('#ffbb22', 'Shrubland'));
+  lcLegend.add(makeRow('#ffff4c', 'Grassland'));
+  lcLegend.add(makeRow('#f096ff', 'Cropland'));
+  lcLegend.add(makeRow('#fa0000', 'Built-up'));
+  lcLegend.add(makeRow('#b4b4b4', 'Bare land'));
+  lcLegend.add(makeRow('#f0f0f0', 'Snow/ice'));
+  lcLegend.add(makeRow('#0064c8', 'Permanent water'));
+  lcLegend.add(makeRow('#0096a0', 'Herbaceous wetland'));
+  lcLegend.add(makeRow('#00cf75', 'Mangroves'));
+  lcLegend.add(makeRow('#fae6a0', 'Moss/lichen'));
+
+  floodLegend.add(ui.Label('Depth', {fontWeight: 'bold'}));
+  
+  // Define red palette and labels
+  var depthLabels = ['High', '', '', '', '', '', '', '', 'Low'];
+  var flippedPalette = redPalette.slice().reverse();
+  
+  // Add each depth color swatch to the legend
+  for (var i = 0; i < redPalette.length; i++) {
+    floodLegend.add(makeRow(flippedPalette[i], depthLabels[i]));
+  }
+
+  // Filled in once the depth percentiles resolve, so the ramp is readable
+  floodLegend.add(depthRangeLabel);
+
+  // Add flood depth legend
+  floodMap.add(floodLegend);
+  
+  //landcoverMap.add(lcLegend);
+  
+  // Population legend
+  var popLegend = ui.Panel({
+    style: {
+      position: 'bottom-left',
+      padding: '5px',
+      backgroundColor: 'rgba(255, 255, 255, 0.6)'
+    }
+  });
+  
+  var popLegendTitle = ui.Label('People per pixel', {fontWeight: 'bold'});
+  popLegend.add(popLegendTitle);
+  
+  popLegend.add(makeRow('#472836', 'Very Low'));
+  popLegend.add(makeRow('#9AD2CB', 'Low'));
+  popLegend.add(makeRow('#ffe87c', 'Medium'));
+  popLegend.add(makeRow('#ffa552', 'High'));
+  popLegend.add(makeRow('#ff4d4d', 'Very High'));
+  
+  populationMap.add(popLegend);
+  
+  var pop_loading_label = ui.Label('Calculating affected population...', {color: 'gray', fontSize: '12px'});
+  pop_chartBox.add(pop_loading_label);
+  
+  // Set the root to the new portal UI
+  ui.root.clear();
+  ui.root.add(mainPanel);
+  
+  // Now that panels are in ui.root, we can safely update the charts and zoom
+  updateBarChart();
+  pop_chartBox.remove(pop_loading_label);
+
+  // Use a short delay to ensure maps are fully initialized and linked before centering
+  ui.util.setTimeout(function() {
+    centerPortalOnAoi();
+  }, 100);
+
+  var portalLinker = ui.Map.Linker(portalMaps);
+}
+
+var leftPiece = ui.Panel(
+  [
+    main_panel[0],
+    leftMap,
+    left_dummy
+    ],
+    ui.Panel.Layout.Flow('horizontal'), {stretch: 'both'});
+var rightPiece = ui.Panel(
+  [
+    right_dummy,
+    rightMap,
+    main_panel[1]
+    ],
+    ui.Panel.Layout.Flow('horizontal'), {stretch: 'both'});
+
+// Create a SplitPanel to hold the adjacent, linked maps.
+var splitPanel = ui.SplitPanel({
+  firstPanel: leftPiece,
+  secondPanel: rightPiece,
+  wipe: true,
+  style: {stretch: 'both'}
+});
+
+// Set the SplitPanel as the only thing in the UI root.
+function refresh() {
+  ui.root.widgets().reset([splitPanel]);
+}
+refresh();
+
+var linker = ui.Map.Linker([leftMap, rightMap]);
+
+// Initialize both maps with content
+updateBothMapPanel();
+
+// Center on the default AOI
+leftMap.centerObject(aoi, 12);
+
+if(ui.url.get('pfd0', null) !== null) {
+  var preFloodDate = ui.url.get('pfd0');
+  var duringFloodDate = ui.url.get('dfd0');
+  
+  var preFloodDays = parseInt(ui.url.get('sd0'));
+  var duringFloodDays = parseInt(ui.url.get('sd1'));
+  
+  start_date = [ee.Date(preFloodDate), ee.Date(duringFloodDate)];
+  advance_days = [preFloodDays, duringFloodDays];
+  
+  if(ui.url.get('country', null) !== null) {
+    var country = ui.url.get('country');
+    var state = ui.url.get('state');
+    updateAoi(country, state, false);
+  }
+  else {
+    var leftLon = parseFloat(ui.url.get('llong'));
+    var leftLat = parseFloat(ui.url.get('llat'));
+    var rightLon = parseFloat(ui.url.get('rlong'));
+    var rightLat = parseFloat(ui.url.get('rlat'));
+    
+    aoi = ee.Geometry.Rectangle(
+      [leftLon, leftLat, rightLon, rightLat],
+      null,
+      false  
+    );
+  }
+  
+  zvv_thd_text.setValue(ui.url.get('zvv'));
+  zvh_thd_text.setValue(ui.url.get('zvh'));
+  pow_thd_text.setValue(ui.url.get('pow'));
+  elev_thd_text.setValue(ui.url.get('elev'));
+  slp_thd_text.setValue(ui.url.get('slp'));
+  pass_dd.setValue(ui.url.get('pass'));
+}
+
